@@ -1,11 +1,44 @@
 {
   "colors" : [
     {
-      "idiom" : "universal"
+      "color" : {
+        "platform" : "osx",
+        "reference" : "systemOrangeColor"
+      },
+      "idiom" : "mac"
+    },
+    {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "light"
+        }
+      ],
+      "color" : {
+        "platform" : "osx",
+        "reference" : "systemOrangeColor"
+      },
+      "idiom" : "mac"
+    },
+    {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "dark"
+        }
+      ],
+      "color" : {
+        "platform" : "osx",
+        "reference" : "systemRedColor"
+      },
+      "idiom" : "mac"
     }
   ],
   "info" : {
     "author" : "xcode",
     "version" : 1
+  },
+  "properties" : {
+    "localizable" : true
   }
 }
