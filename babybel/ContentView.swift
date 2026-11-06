@@ -6,6 +6,11 @@ public import Combine
 struct ContentView: View {
     @StateObject private var workspace = ManuscriptWorkspace()
     @State private var showingFolderPicker = false
+    @State private var imageZoom: CGFloat = 1
+    @State private var imagePan = CGSize.zero
+    @State private var editorTabs: [EditorManuscriptTab] = []
+    @State private var selectedEditorTabID: UUID?
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Group {
@@ -53,7 +58,55 @@ struct ContentView: View {
         } message: {
             Text(workspace.errorMessage)
         }
+        .focusedValue(\.babybelCommandActions, commandActions)
+        .onChange(of: workspace.selectedImageURL) { _, _ in
+            imageZoom = 1
+            imagePan = .zero
+        }
+        .onChange(of: workspace.folderURL) { _, _ in
+            editorTabs = []
+            selectedEditorTabID = nil
+            if let selected = workspace.selectedImageURL {
+                let tab = EditorManuscriptTab(url: selected)
+                editorTabs = [tab]
+                selectedEditorTabID = tab.id
+            }
+        }
+        .onChange(of: workspace.selectedImageURL) { _, selected in
+            guard selectedEditorTabID == nil, let selected else { return }
+            let tab = EditorManuscriptTab(url: selected)
+            editorTabs = [tab]
+            selectedEditorTabID = tab.id
+        }
         .frame(minWidth: 900, minHeight: 600)
+    }
+
+    private var commandActions: BabybelCommandActions {
+        BabybelCommandActions(
+            canSave: workspace.hasUnsavedChanges,
+            canCloseFolder: workspace.folderURL != nil,
+            canNavigateImages: workspace.currentImage != nil,
+            canUseDocument: workspace.markdownURL != nil,
+            recentFolders: workspace.recentFolders.map { recent in
+                BabybelRecentFolderCommand(title: recent.name, path: recent.displayPath) {
+                    workspace.openRecentFolder(recent)
+                }
+            },
+            openFolder: { showingFolderPicker = true },
+            newWindow: { openWindow(id: "main") },
+            newTab: { openEditorTab() },
+            save: { workspace.saveTranscription() },
+            closeFolder: { workspace.closeFolder() },
+            exportWord: { workspace.exportDocument(as: .word) },
+            exportPDF: { workspace.exportDocument(as: .pdf) },
+            exportText: { workspace.exportDocument(as: .plainText) },
+            share: { workspace.shareDocument() },
+            showInFinder: { workspace.showDocumentInFinder() },
+            print: { workspace.printDocument() },
+            zoomIn: { imageZoom = min(imageZoom * 1.25, 16) },
+            zoomOut: { imageZoom = max(imageZoom / 1.25, 0.75) },
+            fitImage: { imageZoom = 1; imagePan = .zero }
+        )
     }
 
     private var workspaceNavigation: some View {
@@ -162,7 +215,7 @@ struct ContentView: View {
             } else {
                 List(workspace.imageFiles, id: \.self) { url in
                     Button {
-                        workspace.selectImage(url)
+                        selectManuscript(url)
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "photo")
@@ -170,7 +223,7 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(url.lastPathComponent)
                                     .lineLimit(1)
-                                Text(workspace.markdownExists(for: url) ? "Transcription available" : "No transcription yet")
+                                Text(workspace.hasSection(for: url) ? "In Transcription.md" : "No section yet")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -195,26 +248,12 @@ struct ContentView: View {
     private var workspaceView: some View {
         if let image = workspace.currentImage {
             HSplitView {
-                VStack(spacing: 0) {
-                    HStack {
-                        Text(workspace.selectedImageURL?.lastPathComponent ?? "Manuscript")
-                            .font(.headline)
-                            .lineLimit(1)
-                        Spacer()
-                    }
-                    .padding(12)
-                    Divider()
-
-                    GeometryReader { geometry in
-                        ScrollView([.horizontal, .vertical]) {
-                            Image(nsImage: image)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: max(geometry.size.width, 1), height: max(geometry.size.height, 1))
-                        }
-                        .background(Color(nsColor: .windowBackgroundColor))
-                    }
-                }
+                ManuscriptImageViewer(
+                    image: image,
+                    title: workspace.selectedImageURL?.lastPathComponent ?? "Manuscript",
+                    zoom: $imageZoom,
+                    pan: $imagePan
+                )
                 .frame(minWidth: 300, idealWidth: 520)
 
                 editor
@@ -231,33 +270,70 @@ struct ContentView: View {
 
     private var editor: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 4) {
+                        ForEach(editorTabs) { tab in
+                            HStack(spacing: 6) {
+                                Button(tab.url.lastPathComponent) {
+                                    activateEditorTab(tab)
+                                }
+                                .lineLimit(1)
+                                .buttonStyle(.plain)
+                                if editorTabs.count > 1 {
+                                    Button {
+                                        closeEditorTab(tab)
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 9, weight: .semibold))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Close Tab")
+                                }
+                            }
+                            .font(.system(size: 12, weight: selectedEditorTabID == tab.id ? .semibold : .regular))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 7)
+                            .background(selectedEditorTabID == tab.id ? Color(nsColor: .controlBackgroundColor) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 7))
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+
+                Button(action: openEditorTab) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.borderless)
+                .help("New Manuscript Tab")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+
+            Divider()
+
             HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(workspace.markdownURL?.lastPathComponent ?? "Transcription.md")
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(workspace.hasUnsavedChanges ? "Unsaved changes" : "Saved as Markdown")
-                        .font(.caption)
-                        .foregroundStyle(workspace.hasUnsavedChanges ? .orange : .secondary)
-                }
+                Text(workspace.markdownURL?.lastPathComponent ?? "Transcription.md")
+                    .font(.headline)
+                    .lineLimit(1)
                 Spacer()
-                Button("Save") {
-                    workspace.saveTranscription()
+                if workspace.hasUnsavedChanges {
+                    Circle()
+                        .fill(.orange)
+                        .frame(width: 7, height: 7)
+                        .help("Unsaved changes")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!workspace.hasUnsavedChanges)
             }
             .padding(12)
 
             Divider()
 
-            TextEditor(text: Binding(
+            MarkdownTextEditor(text: Binding(
                 get: { workspace.transcription },
                 set: { workspace.updateTranscription($0) }
             ))
-            .font(.system(.body, design: .monospaced))
-            .scrollContentBackground(.hidden)
-            .padding(8)
             .accessibilityLabel("Markdown transcription editor")
 
             Divider()
@@ -273,6 +349,246 @@ struct ContentView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+        }
+        .onAppear {
+            if editorTabs.isEmpty, let selected = workspace.selectedImageURL {
+                let tab = EditorManuscriptTab(url: selected)
+                editorTabs = [tab]
+                selectedEditorTabID = tab.id
+            }
+        }
+    }
+
+    private func selectManuscript(_ url: URL) {
+        workspace.selectImage(url)
+        if let activeIndex = editorTabs.firstIndex(where: { $0.id == selectedEditorTabID }) {
+            editorTabs[activeIndex].url = url
+        } else {
+            let tab = EditorManuscriptTab(url: url)
+            editorTabs.append(tab)
+            selectedEditorTabID = tab.id
+        }
+    }
+
+    private func openEditorTab() {
+        let openURLs = Set(editorTabs.map(\.url))
+        let url = workspace.imageFiles.first(where: { !openURLs.contains($0) })
+            ?? workspace.selectedImageURL
+            ?? workspace.imageFiles.first
+        guard let url else { return }
+        let tab = EditorManuscriptTab(url: url)
+        editorTabs.append(tab)
+        selectedEditorTabID = tab.id
+        workspace.selectImage(url)
+    }
+
+    private func activateEditorTab(_ tab: EditorManuscriptTab) {
+        selectedEditorTabID = tab.id
+        workspace.selectImage(tab.url)
+    }
+
+    private func closeEditorTab(_ tab: EditorManuscriptTab) {
+        guard editorTabs.count > 1, let index = editorTabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        let wasSelected = selectedEditorTabID == tab.id
+        editorTabs.remove(at: index)
+        if wasSelected {
+            let next = editorTabs[min(index, editorTabs.count - 1)]
+            selectedEditorTabID = next.id
+            workspace.selectImage(next.url)
+        }
+    }
+}
+
+private struct EditorManuscriptTab: Identifiable {
+    let id = UUID()
+    var url: URL
+}
+
+private struct ManuscriptImageViewer: View {
+    let image: NSImage
+    let title: String
+    @Binding var zoom: CGFloat
+    @Binding var pan: CGSize
+    @State private var dragOrigin = CGSize.zero
+    @State private var isDragging = false
+    @State private var magnificationStart: CGFloat?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Button("Zoom Out", systemImage: "minus.magnifyingglass") {
+                    zoom = max(zoom / 1.25, 0.25)
+                }
+                .labelStyle(.iconOnly)
+                .disabled(zoom <= 0.25)
+                Button("Fit Image") {
+                    zoom = 1
+                    pan = .zero
+                }
+                .font(.caption.monospacedDigit())
+                .help("Fit image to window")
+                Text("\(Int(zoom * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 42)
+                Button("Zoom In", systemImage: "plus.magnifyingglass") {
+                    zoom = min(zoom * 1.25, 8)
+                }
+                .labelStyle(.iconOnly)
+                .disabled(zoom >= 8)
+            }
+            .buttonStyle(.borderless)
+            .padding(12)
+            Divider()
+
+            GeometryReader { geometry in
+                let imageSize = image.size
+                let fitScale = min(
+                    geometry.size.width / max(imageSize.width, 1),
+                    geometry.size.height / max(imageSize.height, 1)
+                )
+                ZStack {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(
+                            width: max(imageSize.width * fitScale * zoom, 1),
+                            height: max(imageSize.height * fitScale * zoom, 1)
+                        )
+                        .offset(pan)
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .contentShape(Rectangle())
+                .background(Color(nsColor: .windowBackgroundColor))
+                .clipped()
+                .gesture(
+                    DragGesture(minimumDistance: 3)
+                        .onChanged { value in
+                            if !isDragging {
+                                dragOrigin = pan
+                                isDragging = true
+                            }
+                            pan = CGSize(
+                                width: dragOrigin.width + value.translation.width,
+                                height: dragOrigin.height + value.translation.height
+                            )
+                        }
+                        .onEnded { _ in isDragging = false }
+                )
+                .simultaneousGesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            let start = magnificationStart ?? zoom
+                            magnificationStart = start
+                            zoom = min(max(start * value, 0.25), 8)
+                        }
+                        .onEnded { _ in magnificationStart = nil }
+                )
+                .help("Drag to pan. Pinch or use the zoom buttons to resize.")
+            }
+        }
+    }
+}
+
+struct BabybelCommandActions {
+    let canSave: Bool
+    let canCloseFolder: Bool
+    let canNavigateImages: Bool
+    let canUseDocument: Bool
+    let recentFolders: [BabybelRecentFolderCommand]
+    let openFolder: () -> Void
+    let newWindow: () -> Void
+    let newTab: () -> Void
+    let save: () -> Void
+    let closeFolder: () -> Void
+    let exportWord: () -> Void
+    let exportPDF: () -> Void
+    let exportText: () -> Void
+    let share: () -> Void
+    let showInFinder: () -> Void
+    let print: () -> Void
+    let zoomIn: () -> Void
+    let zoomOut: () -> Void
+    let fitImage: () -> Void
+}
+
+struct BabybelRecentFolderCommand: Identifiable {
+    var id: String { path }
+    let title: String
+    let path: String
+    let open: () -> Void
+}
+
+private struct BabybelCommandActionsKey: FocusedValueKey {
+    typealias Value = BabybelCommandActions
+}
+
+extension FocusedValues {
+    var babybelCommandActions: BabybelCommandActions? {
+        get { self[BabybelCommandActionsKey.self] }
+        set { self[BabybelCommandActionsKey.self] = newValue }
+    }
+}
+
+struct BabybelCommands: Commands {
+    @FocusedValue(\.babybelCommandActions) private var actions
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Window") { actions?.newWindow() }
+                .keyboardShortcut("n", modifiers: .command)
+            Button("New Tab") { actions?.newTab() }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+            Divider()
+            Button("Open…") { actions?.openFolder() }
+                .keyboardShortcut("o", modifiers: .command)
+            Menu("Open Recent") {
+                if let recentFolders = actions?.recentFolders, !recentFolders.isEmpty {
+                    ForEach(recentFolders) { recent in
+                        Button(recent.title) { recent.open() }
+                    }
+                } else {
+                    Button("No Recent Folders") { }
+                        .disabled(true)
+                }
+            }
+            .disabled(actions?.recentFolders.isEmpty != false)
+            Button("Save Transcription") { actions?.save() }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(actions?.canSave != true)
+            Menu("Export") {
+                Button("Word Document (.docx)") { actions?.exportWord() }
+                Button("PDF (.pdf)") { actions?.exportPDF() }
+                Button("Plain Text (.txt)") { actions?.exportText() }
+            }
+            .disabled(actions?.canUseDocument != true)
+            Button("Share…") { actions?.share() }
+                .disabled(actions?.canUseDocument != true)
+            Button("Show in Finder") { actions?.showInFinder() }
+                .disabled(actions?.canUseDocument != true)
+            Button("Print…") { actions?.print() }
+                .keyboardShortcut("p", modifiers: .command)
+                .disabled(actions?.canUseDocument != true)
+            Divider()
+            Button("Close Folder") { actions?.closeFolder() }
+                .keyboardShortcut("w", modifiers: .command)
+                .disabled(actions?.canCloseFolder != true)
+        }
+
+        CommandMenu("Image") {
+            Button("Zoom In") { actions?.zoomIn() }
+                .keyboardShortcut("=", modifiers: .command)
+                .disabled(actions?.canNavigateImages != true)
+            Button("Zoom Out") { actions?.zoomOut() }
+                .keyboardShortcut("-", modifiers: .command)
+                .disabled(actions?.canNavigateImages != true)
+            Button("Fit Image to Window") { actions?.fitImage() }
+                .keyboardShortcut("0", modifiers: .command)
+                .disabled(actions?.canNavigateImages != true)
         }
     }
 }
@@ -356,6 +672,9 @@ final class ManuscriptWorkspace: ObservableObject {
     @Published private(set) var errorMessage = ""
 
     private var hasFolderAccess = false
+    private var documentPreamble = ""
+    private var sections: [String: String] = [:]
+    private var sectionOrder: [String] = []
 
     private let recentFoldersDefaultsKey = "babybel.recentManuscriptFolders"
 
@@ -398,9 +717,10 @@ final class ManuscriptWorkspace: ObservableObject {
             imageFiles = images
             selectedImageURL = nil
             currentImage = nil
-            markdownURL = nil
+            markdownURL = url.appendingPathComponent("Transcription.md")
             transcription = ""
             hasUnsavedChanges = false
+            loadSharedDocument(importingImagesFrom: images, in: url)
 
             if let firstImage = images.first {
                 selectImage(firstImage)
@@ -410,6 +730,24 @@ final class ManuscriptWorkspace: ObservableObject {
             if didStartAccess { url.stopAccessingSecurityScopedResource() }
             report(error)
         }
+    }
+
+    func closeFolder() {
+        if hasUnsavedChanges && !saveTranscription() { return }
+        if hasFolderAccess, let folderURL {
+            folderURL.stopAccessingSecurityScopedResource()
+        }
+        hasFolderAccess = false
+        folderURL = nil
+        imageFiles = []
+        selectedImageURL = nil
+        currentImage = nil
+        markdownURL = nil
+        transcription = ""
+        sections = [:]
+        sectionOrder = []
+        documentPreamble = ""
+        hasUnsavedChanges = false
     }
 
     func openRecentFolder(_ recent: RecentManuscriptFolder) {
@@ -435,27 +773,23 @@ final class ManuscriptWorkspace: ObservableObject {
             return
         }
 
-        let textURL = markdownURL(for: url)
-        do {
-            let text: String
-            if FileManager.default.fileExists(atPath: textURL.path) {
-                text = try String(contentsOf: textURL, encoding: .utf8)
-            } else {
-                text = ""
-            }
-
-            selectedImageURL = url
-            currentImage = image
-            markdownURL = textURL
-            transcription = text
-            hasUnsavedChanges = false
-        } catch {
-            report(error)
+        let key = url.lastPathComponent
+        let createdSection = sections[key] == nil
+        if createdSection {
+            sections[key] = ""
+            sectionOrder.append(key)
         }
+        selectedImageURL = url
+        currentImage = image
+        transcription = sections[key] ?? ""
+        hasUnsavedChanges = hasUnsavedChanges || createdSection
     }
 
     func updateTranscription(_ text: String) {
         transcription = text
+        if let selectedImageURL {
+            sections[selectedImageURL.lastPathComponent] = text
+        }
         hasUnsavedChanges = true
     }
 
@@ -463,7 +797,7 @@ final class ManuscriptWorkspace: ObservableObject {
     func saveTranscription() -> Bool {
         guard hasUnsavedChanges, let markdownURL else { return true }
         do {
-            try Data(transcription.utf8).write(to: markdownURL, options: .atomic)
+            try Data(serializedDocument.utf8).write(to: markdownURL, options: .atomic)
             hasUnsavedChanges = false
             return true
         } catch {
@@ -472,8 +806,64 @@ final class ManuscriptWorkspace: ObservableObject {
         }
     }
 
-    func markdownExists(for imageURL: URL) -> Bool {
-        FileManager.default.fileExists(atPath: markdownURL(for: imageURL).path)
+    func hasSection(for imageURL: URL) -> Bool {
+        sections[imageURL.lastPathComponent] != nil
+    }
+
+    func exportDocument(as format: BabybelExportFormat) {
+        guard markdownURL != nil else { return }
+        guard saveTranscription() else { return }
+        do {
+            try BabybelDocumentExporter.export(
+                text: serializedDocument,
+                format: format,
+                suggestedName: "\(folderURL?.lastPathComponent ?? "Babybel")-Transcription"
+            )
+        } catch {
+            report(error)
+        }
+    }
+
+    func shareDocument() {
+        guard let markdownURL, saveDocumentForExternalAction() else { return }
+        guard let view = NSApp.keyWindow?.contentView else { return }
+        let picker = NSSharingServicePicker(items: [markdownURL])
+        picker.show(
+            relativeTo: NSRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0),
+            of: view,
+            preferredEdge: .minY
+        )
+    }
+
+    func showDocumentInFinder() {
+        guard let markdownURL, saveDocumentForExternalAction() else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([markdownURL])
+    }
+
+    func printDocument() {
+        guard markdownURL != nil, saveTranscription() else { return }
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 612, height: 792))
+        textView.string = serializedDocument
+        textView.font = .systemFont(ofSize: 12)
+        textView.isEditable = false
+
+        let printInfo = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo()
+        printInfo.horizontalPagination = .fit
+        printInfo.verticalPagination = .automatic
+        NSPrintOperation(view: textView, printInfo: printInfo).run()
+    }
+
+    private func saveDocumentForExternalAction() -> Bool {
+        guard let markdownURL else { return false }
+        guard saveTranscription() else { return false }
+        guard !FileManager.default.fileExists(atPath: markdownURL.path) else { return true }
+        do {
+            try Data(serializedDocument.utf8).write(to: markdownURL, options: .atomic)
+            return true
+        } catch {
+            report(error)
+            return false
+        }
     }
 
     func report(_ error: Error) {
@@ -485,8 +875,81 @@ final class ManuscriptWorkspace: ObservableObject {
         showingError = true
     }
 
-    private func markdownURL(for imageURL: URL) -> URL {
-        imageURL.deletingPathExtension().appendingPathExtension("md")
+    private var serializedDocument: String {
+        let renderedSections = sectionOrder.compactMap { key -> String? in
+            guard let text = sections[key] else { return nil }
+            return "## \(key)\n\n\(text)"
+        }
+        return ([documentPreamble.trimmingCharacters(in: .newlines)] + renderedSections)
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n") + "\n"
+    }
+
+    private func loadSharedDocument(importingImagesFrom images: [URL], in folder: URL) {
+        guard let markdownURL else { return }
+        documentPreamble = "# \(folder.lastPathComponent)\n\n"
+        sections = [:]
+        sectionOrder = []
+
+        if FileManager.default.fileExists(atPath: markdownURL.path) {
+            do {
+                let contents = try String(contentsOf: markdownURL, encoding: .utf8)
+                parseDocument(contents, imageNames: Set(images.map(\.lastPathComponent)))
+                if sections.isEmpty, !contents.isEmpty, let firstImage = images.first {
+                    sections[firstImage.lastPathComponent] = contents.trimmingCharacters(in: .newlines)
+                    sectionOrder.append(firstImage.lastPathComponent)
+                    hasUnsavedChanges = true
+                }
+            } catch {
+                report(error)
+            }
+            return
+        }
+
+        // Migrate transcriptions created by the first prototype into the shared file.
+        for image in images {
+            let oldURL = image.deletingPathExtension().appendingPathExtension("md")
+            guard FileManager.default.fileExists(atPath: oldURL.path),
+                  let text = try? String(contentsOf: oldURL, encoding: .utf8) else { continue }
+            let key = image.lastPathComponent
+            sections[key] = text
+            sectionOrder.append(key)
+        }
+        if !sections.isEmpty {
+            hasUnsavedChanges = true
+        }
+    }
+
+    private func parseDocument(_ text: String, imageNames: Set<String>) {
+        var preambleLines: [String] = []
+        var currentSection: String?
+        var sectionLines: [String] = []
+
+        func saveCurrentSection() {
+            guard let currentSection else { return }
+            sections[currentSection] = sectionLines.joined(separator: "\n").trimmingCharacters(in: .newlines)
+            if !sectionOrder.contains(currentSection) { sectionOrder.append(currentSection) }
+            sectionLines = []
+        }
+
+        for line in text.components(separatedBy: .newlines) {
+            if line.hasPrefix("## ") {
+                let candidate = String(line.dropFirst(3))
+                if imageNames.contains(candidate) {
+                    saveCurrentSection()
+                    currentSection = candidate
+                    continue
+                }
+            }
+            if currentSection == nil {
+                preambleLines.append(line)
+            } else {
+                sectionLines.append(line)
+            }
+        }
+        saveCurrentSection()
+        let savedPreamble = preambleLines.joined(separator: "\n").trimmingCharacters(in: .newlines)
+        if !savedPreamble.isEmpty { documentPreamble = savedPreamble }
     }
 
     private func saveRecentFolder(_ url: URL, firstImage: URL?) {
@@ -497,7 +960,7 @@ final class ManuscriptWorkspace: ObservableObject {
                 relativeTo: nil
             )
             let previewData = firstImage.flatMap { makePreviewData(for: $0) }
-            let markdownName = firstImage.map { markdownURL(for: $0).lastPathComponent } ?? "No images yet"
+            let markdownName = "Transcription.md"
             let recent = RecentManuscriptFolder(
                 bookmarkData: bookmark,
                 name: url.lastPathComponent,

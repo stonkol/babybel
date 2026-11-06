@@ -29,7 +29,7 @@
       ],
       "color" : {
         "platform" : "osx",
-        "reference" : "systemRedColor"
+        "reference" : "systemOrangeColor"
       },
       "idiom" : "mac"
     }
