@@ -6,7 +6,7 @@
 
 Babybel is a native macOS application for transcribing manuscripts and historical documents into Markdown, Word and other text formats. It combines manuscript image viewing, text editing, language reference tools and custom handwriting recognition in one workspace.
 
-> macOS14 are the minimun requirements. 
+> macOS 14 are the minimun requirements. 
 
 ## App UI
 
@@ -61,6 +61,12 @@ Export options can include password protection for PDF and Word documents, where
 
 ## Roadmap
 
+1. UI, have two windows inside the app 
+    1. [ ] on the left a macos native like text editor for edit in md, can adjust text size and more
+        1. Babybel works directly with user-selected directories. When a directory is opened, the application displays supported manuscript images alongside associated text files.
+    1. [ ] on the right it has an image viewer with with hideable thumbnails (like macos preview app) on its side when the user select multiple images
+        1. [ ] the images can be zoomed and panned.
+
 1. Languages & Dictionaries
     1. [ ] Spelling Check
     1. [ ] macOS dictionary support
@@ -70,6 +76,9 @@ Export options can include password protection for PDF and Word documents, where
 
 1. Image Editing
     1. [ ] Adjust Image brigthness, white temperature and contrast for easy reading.
+    2. [ ] have an auto image adjustment
+    3. [ ] can apply the adjustment of the current image to all the other ones in the same directory
+    4. [ ] image editing in the app will not rewrite the og image, it will make an new dir called edited images and and save the edited images there.
 
 1. Image word recognition
     1. [ ] The app will detect each line in the picture, put the a focus on that line
