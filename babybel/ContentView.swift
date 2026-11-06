@@ -218,8 +218,8 @@ struct ContentView: View {
                         selectManuscript(url)
                     } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: "photo")
-                                .foregroundStyle(.secondary)
+                            SidebarImageThumbnail(image: workspace.thumbnail(for: url))
+
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(url.lastPathComponent)
                                     .lineLimit(1)
@@ -404,6 +404,28 @@ private struct EditorManuscriptTab: Identifiable {
     var url: URL
 }
 
+private struct SidebarImageThumbnail: View {
+    let image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.medium)
+                    .scaledToFit()
+                    .padding(2)
+            } else {
+                Image(systemName: "photo")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 52, height: 52)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
 private struct ManuscriptImageViewer: View {
     let image: NSImage
     let title: String
@@ -431,10 +453,6 @@ private struct ManuscriptImageViewer: View {
                 }
                 .font(.caption.monospacedDigit())
                 .help("Fit image to window")
-                Text("\(Int(zoom * 100))%")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 42)
                 Button("Zoom In", systemImage: "plus.magnifyingglass") {
                     zoom = min(zoom * 1.25, 8)
                 }
@@ -662,6 +680,7 @@ struct RecentManuscriptFolder: Codable, Identifiable {
 final class ManuscriptWorkspace: ObservableObject {
     @Published private(set) var folderURL: URL?
     @Published private(set) var imageFiles: [URL] = []
+    private var imageThumbnails: [URL: NSImage] = [:]
     @Published private(set) var selectedImageURL: URL?
     @Published private(set) var currentImage: NSImage?
     @Published private(set) var markdownURL: URL?
@@ -715,6 +734,9 @@ final class ManuscriptWorkspace: ObservableObject {
             folderURL = url
             hasFolderAccess = didStartAccess
             imageFiles = images
+            imageThumbnails = Dictionary(uniqueKeysWithValues: images.compactMap { url in
+                makeThumbnail(for: url).map { (url, $0) }
+            })
             selectedImageURL = nil
             currentImage = nil
             markdownURL = url.appendingPathComponent("Transcription.md")
@@ -740,6 +762,7 @@ final class ManuscriptWorkspace: ObservableObject {
         hasFolderAccess = false
         folderURL = nil
         imageFiles = []
+        imageThumbnails = [:]
         selectedImageURL = nil
         currentImage = nil
         markdownURL = nil
@@ -808,6 +831,10 @@ final class ManuscriptWorkspace: ObservableObject {
 
     func hasSection(for imageURL: URL) -> Bool {
         sections[imageURL.lastPathComponent] != nil
+    }
+
+    func thumbnail(for imageURL: URL) -> NSImage? {
+        imageThumbnails[imageURL]
     }
 
     func exportDocument(as format: BabybelExportFormat) {
@@ -977,6 +1004,31 @@ final class ManuscriptWorkspace: ObservableObject {
         } catch {
             reportMessage("The folder opened, but Babybel couldn’t save it to Recent Folders.\n\(error.localizedDescription)")
         }
+    }
+
+    private func makeThumbnail(for imageURL: URL) -> NSImage? {
+        guard let image = NSImage(contentsOf: imageURL), image.size.width > 0, image.size.height > 0 else {
+            return nil
+        }
+
+        let thumbnailSize = NSSize(width: 104, height: 104)
+        let thumbnail = NSImage(size: thumbnailSize)
+        thumbnail.lockFocus()
+        let scale = min(thumbnailSize.width / image.size.width, thumbnailSize.height / image.size.height)
+        let drawSize = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        image.draw(
+            in: NSRect(
+                x: (thumbnailSize.width - drawSize.width) / 2,
+                y: (thumbnailSize.height - drawSize.height) / 2,
+                width: drawSize.width,
+                height: drawSize.height
+            ),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1
+        )
+        thumbnail.unlockFocus()
+        return thumbnail
     }
 
     private func makePreviewData(for imageURL: URL) -> Data? {
