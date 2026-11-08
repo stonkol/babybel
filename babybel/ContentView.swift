@@ -8,6 +8,9 @@ struct ContentView: View {
     @State private var showingFolderPicker = false
     @State private var imageZoom: CGFloat = 1
     @State private var imagePan = CGSize.zero
+    @State private var imageRotation = 0.0
+    @State private var showingImageInspector = false
+    @State private var markupMode = false
     @State private var editorTabs: [EditorManuscriptTab] = []
     @State private var selectedEditorTabID: UUID?
     @Environment(\.openWindow) private var openWindow
@@ -62,6 +65,9 @@ struct ContentView: View {
         .onChange(of: workspace.selectedImageURL) { _, _ in
             imageZoom = 1
             imagePan = .zero
+            imageRotation = 0
+            showingImageInspector = false
+            markupMode = false
         }
         .onChange(of: workspace.folderURL) { _, _ in
             editorTabs = []
@@ -110,12 +116,7 @@ struct ContentView: View {
     }
 
     private var workspaceNavigation: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            workspaceView
-        }
-        .navigationTitle(workspace.folderURL?.lastPathComponent ?? "")
+        workspaceView
     }
 
     private var homeView: some View {
@@ -186,64 +187,6 @@ struct ContentView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            if let folderURL = workspace.folderURL {
-                HStack {
-                    Image(systemName: "folder.fill")
-                        .foregroundStyle(.orange)
-                    Text(folderURL.lastPathComponent)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-
-                Divider()
-            }
-
-            if workspace.imageFiles.isEmpty {
-                ContentUnavailableView(
-                    workspace.folderURL == nil ? "Open a Folder" : "No Images Found",
-                    systemImage: "photo.on.rectangle.angled",
-                    description: Text(workspace.folderURL == nil
-                        ? "Choose a folder containing manuscript images to begin."
-                        : "Add supported image files to this folder, then reopen it.")
-                )
-                .padding(.horizontal, 8)
-            } else {
-                List(workspace.imageFiles, id: \.self) { url in
-                    Button {
-                        selectManuscript(url)
-                    } label: {
-                        HStack(spacing: 10) {
-                            SidebarImageThumbnail(image: workspace.thumbnail(for: url))
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(url.lastPathComponent)
-                                    .lineLimit(1)
-                                Text(workspace.hasSection(for: url) ? "In Transcription.md" : "No section yet")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 0)
-                            if workspace.selectedImageURL == url {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.tint)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .listRowBackground(workspace.selectedImageURL == url ? Color.accentColor.opacity(0.12) : Color.clear)
-                }
-                .listStyle(.sidebar)
-            }
-        }
-        .navigationSplitViewColumnWidth(min: 190, ideal: 240, max: 320)
-    }
-
     @ViewBuilder
     private var workspaceView: some View {
         if let image = workspace.currentImage {
@@ -251,8 +194,15 @@ struct ContentView: View {
                 ManuscriptImageViewer(
                     image: image,
                     title: workspace.selectedImageURL?.lastPathComponent ?? "Manuscript",
+                    imageFiles: workspace.imageFiles,
+                    selectedImageURL: workspace.selectedImageURL,
+                    thumbnail: { workspace.thumbnail(for: $0) },
+                    selectImage: selectManuscript,
                     zoom: $imageZoom,
-                    pan: $imagePan
+                    pan: $imagePan,
+                    rotation: $imageRotation,
+                    showingInspector: $showingImageInspector,
+                    markupMode: $markupMode
                 )
                 .frame(minWidth: 300, idealWidth: 520)
 
@@ -404,62 +354,55 @@ private struct EditorManuscriptTab: Identifiable {
     var url: URL
 }
 
-private struct SidebarImageThumbnail: View {
-    let image: NSImage?
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.medium)
-                    .scaledToFit()
-                    .padding(2)
-            } else {
-                Image(systemName: "photo")
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 52, height: 52)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-}
-
 private struct ManuscriptImageViewer: View {
     let image: NSImage
     let title: String
+    let imageFiles: [URL]
+    let selectedImageURL: URL?
+    let thumbnail: (URL) -> NSImage?
+    let selectImage: (URL) -> Void
     @Binding var zoom: CGFloat
     @Binding var pan: CGSize
+    @Binding var rotation: Double
+    @Binding var showingInspector: Bool
+    @Binding var markupMode: Bool
     @State private var dragOrigin = CGSize.zero
     @State private var isDragging = false
     @State private var magnificationStart: CGFloat?
+    @State private var markupStrokes: [[CGPoint]] = []
+    @State private var activeStroke: [CGPoint] = []
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                Button("Zoom Out", systemImage: "minus.magnifyingglass") {
-                    zoom = max(zoom / 1.25, 0.25)
+                HStack(spacing: 3) {
+                    ViewerToolbarButton(title: "Zoom Out", symbol: "minus.magnifyingglass", disabled: zoom <= 0.25) {
+                        zoom = max(zoom / 1.25, 0.25)
+                    }
+                    ViewerToolbarButton(title: "Actual Size", symbol: "1.magnifyingglass") {
+                        zoom = 1
+                        pan = .zero
+                    }
+                    ViewerToolbarButton(title: "Zoom In", symbol: "plus.magnifyingglass", disabled: zoom >= 8) {
+                        zoom = min(zoom * 1.25, 8)
+                    }
+                    ToolbarDivider()
+                    ViewerToolbarButton(title: "Rotate Left", symbol: "rotate.left") {
+                        rotation -= 90
+                    }
+                    ViewerToolbarButton(title: "Inspector", symbol: "info.circle", isSelected: showingInspector) {
+                        showingInspector.toggle()
+                    }
+                    ViewerToolbarButton(title: markupMode ? "Finish Markup" : "Show Markup",
+                                        symbol: "pencil.tip.crop.circle", isSelected: markupMode) {
+                        markupMode.toggle()
+                    }
                 }
-                .labelStyle(.iconOnly)
-                .disabled(zoom <= 0.25)
-                Button("Fit Image") {
-                    zoom = 1
-                    pan = .zero
-                }
-                .font(.caption.monospacedDigit())
-                .help("Fit image to window")
-                Button("Zoom In", systemImage: "plus.magnifyingglass") {
-                    zoom = min(zoom * 1.25, 8)
-                }
-                .labelStyle(.iconOnly)
-                .disabled(zoom >= 8)
             }
-            .buttonStyle(.borderless)
             .padding(12)
             Divider()
 
@@ -469,34 +412,79 @@ private struct ManuscriptImageViewer: View {
                     geometry.size.width / max(imageSize.width, 1),
                     geometry.size.height / max(imageSize.height, 1)
                 )
-                ZStack {
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(
-                            width: max(imageSize.width * fitScale * zoom, 1),
-                            height: max(imageSize.height * fitScale * zoom, 1)
-                        )
+                HStack(spacing: 0) {
+                    ZStack {
+                        ZStack {
+                            Image(nsImage: image)
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(width: max(imageSize.width * fitScale * zoom, 1),
+                                       height: max(imageSize.height * fitScale * zoom, 1))
+                            if markupMode {
+                                Canvas { context, _ in
+                                    for stroke in markupStrokes + (activeStroke.isEmpty ? [] : [activeStroke]) {
+                                        guard let first = stroke.first else { continue }
+                                        var path = Path()
+                                        path.move(to: first)
+                                        for point in stroke.dropFirst() { path.addLine(to: point) }
+                                        context.stroke(path, with: .color(.orange), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                                    }
+                                }
+                                .frame(width: max(imageSize.width * fitScale * zoom, 1),
+                                       height: max(imageSize.height * fitScale * zoom, 1))
+                            }
+                        }
+                        .rotationEffect(.degrees(rotation))
                         .offset(pan)
+                        .contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 2)
+                            .onChanged { value in
+                                if markupMode {
+                                    activeStroke.append(value.location)
+                                } else {
+                                    if !isDragging {
+                                        dragOrigin = pan
+                                        isDragging = true
+                                    }
+                                    pan = CGSize(width: dragOrigin.width + value.translation.width,
+                                                 height: dragOrigin.height + value.translation.height)
+                                }
+                            }
+                            .onEnded { _ in
+                                if markupMode, !activeStroke.isEmpty {
+                                    markupStrokes.append(activeStroke)
+                                    activeStroke = []
+                                }
+                                isDragging = false
+                            })
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if showingInspector {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Image Inspector")
+                                .font(.headline)
+                            LabeledContent("Name", value: title)
+                            LabeledContent("Size", value: "\(Int(image.size.width)) × \(Int(image.size.height))")
+                            LabeledContent("Zoom", value: "\(Int(zoom * 100))%")
+                            if let selectedImageURL {
+                                LabeledContent("Format", value: selectedImageURL.pathExtension.uppercased())
+                                Text(selectedImageURL.path)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                            Spacer()
+                        }
+                        .padding(14)
+                        .frame(width: 210, alignment: .leading)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                    }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
-                .contentShape(Rectangle())
                 .background(Color(nsColor: .windowBackgroundColor))
                 .clipped()
-                .gesture(
-                    DragGesture(minimumDistance: 3)
-                        .onChanged { value in
-                            if !isDragging {
-                                dragOrigin = pan
-                                isDragging = true
-                            }
-                            pan = CGSize(
-                                width: dragOrigin.width + value.translation.width,
-                                height: dragOrigin.height + value.translation.height
-                            )
-                        }
-                        .onEnded { _ in isDragging = false }
-                )
                 .simultaneousGesture(
                     MagnificationGesture()
                         .onChanged { value in
@@ -506,9 +494,107 @@ private struct ManuscriptImageViewer: View {
                         }
                         .onEnded { _ in magnificationStart = nil }
                 )
-                .help("Drag to pan. Pinch or use the zoom buttons to resize.")
             }
+
+            if markupMode {
+                HStack {
+                    Label("Markup mode", systemImage: "pencil.tip.crop.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear Markup") {
+                        markupStrokes = []
+                        activeStroke = []
+                    }
+                    .buttonStyle(.borderless)
+                    Button("Done") { markupMode = false }
+                        .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                Divider()
+            }
+
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(imageFiles, id: \.self) { url in
+                        Button {
+                            selectImage(url)
+                        } label: {
+                            VStack(spacing: 6) {
+                                Group {
+                                    if let preview = thumbnail(url) {
+                                        Image(nsImage: preview)
+                                            .resizable()
+                                            .interpolation(.high)
+                                            .scaledToFit()
+                                    } else {
+                                        Image(systemName: "photo")
+                                            .font(.system(size: 26))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .frame(width: 118, height: 84)
+                                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
+                                .overlay(RoundedRectangle(cornerRadius: 7)
+                                    .strokeBorder(selectedImageURL == url ? Color.orange : Color.primary.opacity(0.10),
+                                                  lineWidth: selectedImageURL == url ? 2 : 1))
+                                Text(url.lastPathComponent)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .frame(width: 118)
+                                    .foregroundStyle(selectedImageURL == url ? Color.primary : Color.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .help(url.lastPathComponent)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+            .frame(height: 126)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
+    }
+}
+
+private struct ViewerToolbarButton: View {
+    let title: String
+    let symbol: String
+    var isSelected = false
+    var disabled = false
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(disabled ? Color.secondary : Color.primary)
+                .frame(width: 30, height: 28)
+                .background {
+                    if isHovered && !disabled {
+                        RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.09))
+                    } else if isSelected {
+                        RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.12))
+                    }
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .onHover { isHovered = $0 }
+        .help(title)
+    }
+}
+
+private struct ToolbarDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: 1, height: 18)
+            .padding(.horizontal, 4)
     }
 }
 
